@@ -20,6 +20,9 @@ param location string
 // }
 param resourceGroupName string = ''
 
+@description('Deployment location for all resources')
+param deploymentLocation string = location
+
 var abbrs = loadJsonContent('./abbreviations.json')
 
 // tags that should be applied to all resources.
@@ -28,24 +31,21 @@ var tags = {
   'azd-env-name': environmentName
 }
 
-// Generate a unique token to be used in naming resources.
-// Remove linter suppression after using.
-#disable-next-line no-unused-vars
-var resourceToken = toLower(uniqueString(subscription().id, environmentName, location))
-
-// Name of the service defined in azure.yaml
-// A tag named azd-service-name with this value should be applied to the service host resource, such as:
-//   Microsoft.Web/sites for appservice, function
-// Example usage:
-//   tags: union(tags, { 'azd-service-name': apiServiceName })
-#disable-next-line no-unused-vars
-var apiServiceName = 'python-api'
-
 // Organize resources in a resource group
 resource rg 'Microsoft.Resources/resourceGroups@2021-04-01' = {
   name: !empty(resourceGroupName) ? resourceGroupName : '${abbrs.resourcesResourceGroups}${environmentName}'
   location: location
   tags: tags
+}
+
+module functionsStack './functions-stack.bicep' = {
+  scope: rg
+  name: 'functions-stack'
+  params: {
+    environmentName: environmentName
+    location: deploymentLocation
+    tags: tags
+  }
 }
 
 // Add resources to be provisioned below.
@@ -64,3 +64,8 @@ resource rg 'Microsoft.Resources/resourceGroups@2021-04-01' = {
 // To see these outputs, run `azd env get-values`,  or `azd env get-values --output json` for json output.
 output AZURE_LOCATION string = location
 output AZURE_TENANT_ID string = tenant().tenantId
+output RESOURCE_GROUP_NAME string = rg.name
+output PRESIDIO_FUNCTION_APP_NAME string = functionsStack.outputs.PRESIDIO_FUNCTION_APP_NAME
+output PRESIDIO_FUNCTION_BASE_URL string = functionsStack.outputs.PRESIDIO_FUNCTION_BASE_URL
+output DEMO_FUNCTION_APP_NAME string = functionsStack.outputs.DEMO_FUNCTION_APP_NAME
+output DEMO_FUNCTION_BASE_URL string = functionsStack.outputs.DEMO_FUNCTION_BASE_URL

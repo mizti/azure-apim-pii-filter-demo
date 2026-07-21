@@ -1,0 +1,9 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "PRESIDIO_API_URL": "http://localhost:7071/api/presidio/analyze",
+    "PRESIDIO_TIMEOUT_SECONDS": "10"
+  }
+}
