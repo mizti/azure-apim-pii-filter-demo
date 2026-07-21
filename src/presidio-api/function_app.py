@@ -9,21 +9,21 @@ app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 EMAIL_RECOGNIZER = PatternRecognizer(
     supported_entity="EMAIL_ADDRESS",
     patterns=[
-        Pattern(name="email", regex=r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}", score=0.8),
+        Pattern(name="email", regex=r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", score=0.8),
     ],
 )
 
 PHONE_RECOGNIZER = PatternRecognizer(
     supported_entity="PHONE_NUMBER",
     patterns=[
-        Pattern(name="jp_phone", regex=r"(?:0\\d{1,4}-\\d{1,4}-\\d{4}|0\\d{9,10})", score=0.8),
+        Pattern(name="jp_phone", regex=r"(?:0\d{1,4}-\d{1,4}-\d{4}|0\d{9,10})", score=0.8),
     ],
 )
 
 CARD_RECOGNIZER = PatternRecognizer(
     supported_entity="CREDIT_CARD",
     patterns=[
-        Pattern(name="card", regex=r"(?:\\d[ -]*?){13,16}", score=0.6),
+        Pattern(name="card", regex=r"(?:\d[ -]*?){13,16}", score=0.6),
     ],
 )
 
@@ -43,7 +43,7 @@ def _collect_findings(text: str) -> list[dict]:
             )
 
     # Lightweight my-number style check using regex to keep dependencies small.
-    for match in re.finditer(r"\\b\\d{4}-\\d{4}-\\d{4}\\b", text):
+    for match in re.finditer(r"\b\d{4}-\d{4}-\d{4}\b", text):
         findings.append(
             {
                 "entity_type": "NATIONAL_ID",
@@ -58,7 +58,7 @@ def _collect_findings(text: str) -> list[dict]:
     return findings
 
 
-@app.route(route="presidio/analyze", methods=["POST"])
+@app.route(route="pii-filter/analyze", methods=["POST"])
 def presidio_analyze(req: func.HttpRequest) -> func.HttpResponse:
     try:
         body = req.get_json()

@@ -4,7 +4,7 @@
 This demo verifies that API requests do not contain personally identifiable information (PII) before they reach a business API.
 
 The design demonstrates two independent protection layers:
-- Application-level validation in the Demo API Function.
+- Application-level validation in the internal PII Filter Function.
 - Gateway-level validation in API Management policy.
 
 ## Target Architecture
@@ -16,15 +16,15 @@ Flow:
 1. A client sends a request to APIM.
 2. APIM policy sends the same payload to the Presidio Function.
 3. If PII is detected, APIM returns `400 Bad Request`.
-4. If not detected, APIM forwards the request to the Demo Function.
-5. The Demo Function also calls the Presidio Function for defense in depth.
+4. If not detected, APIM forwards the customer support message to the internal PII Filter Function.
+5. The PII Filter Function also calls the Presidio Function for defense in depth.
 
 ## Components
 - `presidio-api` (Function App)
-  - Hosts `/api/presidio/analyze`.
+  - Hosts `/api/pii-filter/analyze`.
   - Returns detection result and matching entities.
 - `demo-api` (Function App)
-  - Hosts `/api/demo/process`.
+  - Hosts the internal `/api/pii-filter/messages` endpoint.
   - Calls Presidio API and rejects requests containing PII.
 - APIM
   - Public endpoint for the demo.

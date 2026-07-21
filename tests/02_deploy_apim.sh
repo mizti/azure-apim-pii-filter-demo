@@ -10,8 +10,8 @@ RG_NAME="$1"
 PUBLISHER_EMAIL="$2"
 LOCATION="$3"
 
-DEMO_URL="$(az resource list -g "$RG_NAME" --resource-type "Microsoft.Web/sites" --query "[?contains(name, 'demo')].properties.defaultHostName | [0]" -o tsv)"
-PRESIDIO_URL="$(az resource list -g "$RG_NAME" --resource-type "Microsoft.Web/sites" --query "[?contains(name, 'presidio')].properties.defaultHostName | [0]" -o tsv)"
+DEMO_URL="$(az functionapp list -g "$RG_NAME" --query "[?tags.\"azd-service-name\" == 'demo-api'].defaultHostName | [0]" -o tsv)"
+PRESIDIO_URL="$(az functionapp list -g "$RG_NAME" --query "[?tags.\"azd-service-name\" == 'presidio-api'].defaultHostName | [0]" -o tsv)"
 
 if [[ -z "$DEMO_URL" || -z "$PRESIDIO_URL" ]]; then
   echo "Could not find demo/presidio function apps in resource group: $RG_NAME"
@@ -27,7 +27,13 @@ az deployment group create \
   -p apimName="$APIM_NAME" \
      location="$LOCATION" \
      publisherEmail="$PUBLISHER_EMAIL" \
-     demoFunctionBaseUrl="https://${DEMO_URL}" \
+     piiFilterFunctionBaseUrl="https://${DEMO_URL}" \
      presidioFunctionBaseUrl="https://${PRESIDIO_URL}"
+
+for LEGACY_API_ID in demo-api presidio-api; do
+  if az apim api show -g "$RG_NAME" --service-name "$APIM_NAME" --api-id "$LEGACY_API_ID" >/dev/null 2>&1; then
+    az apim api delete -g "$RG_NAME" --service-name "$APIM_NAME" --api-id "$LEGACY_API_ID" --yes
+  fi
+done
 
 echo "APIM deployment triggered/completed: $APIM_NAME"

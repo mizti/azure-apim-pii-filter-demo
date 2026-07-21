@@ -1,10 +1,10 @@
-# API Interface Specification
+# APIインターフェース仕様
 
-## 1. Presidio API (Function)
+## 1. Presidio PII Filter API（Function）
 
 ### Endpoint
 - Method: `POST`
-- Path: `/api/presidio/analyze`
+- Path: `/api/pii-filter/analyze`
 - Content-Type: `application/json`
 
 ### Request Body
@@ -38,11 +38,11 @@
 }
 ```
 
-## 2. Demo API (Function)
+## 2. Message PII Filter API（Function）
 
 ### Endpoint
 - Method: `POST`
-- Path: `/api/demo/process`
+- Path: `/api/pii-filter/messages`
 - Content-Type: `application/json`
 
 ### Request Body
@@ -87,16 +87,16 @@
 }
 ```
 
-## 3. APIM Public API
+## 3. Customer Support API（APIM公開API）
 
 ### Endpoint
 - Method: `POST`
-- Path: `/demo/process`
+- Path: `/customer-support/messages`
 
 ### Behavior
 - APIM sends the inbound request body to Presidio API.
 - If `has_pii == true`, APIM returns `400`.
-- Otherwise APIM forwards request to Demo API `/api/demo/process`.
+- Otherwise APIM forwards the request to the internal PII filter API `/api/pii-filter/messages`.
 
 ### APIM PII Block Response (`400`)
 ```json

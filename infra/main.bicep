@@ -67,5 +67,5 @@ output AZURE_TENANT_ID string = tenant().tenantId
 output RESOURCE_GROUP_NAME string = rg.name
 output PRESIDIO_FUNCTION_APP_NAME string = functionsStack.outputs.PRESIDIO_FUNCTION_APP_NAME
 output PRESIDIO_FUNCTION_BASE_URL string = functionsStack.outputs.PRESIDIO_FUNCTION_BASE_URL
-output DEMO_FUNCTION_APP_NAME string = functionsStack.outputs.DEMO_FUNCTION_APP_NAME
-output DEMO_FUNCTION_BASE_URL string = functionsStack.outputs.DEMO_FUNCTION_BASE_URL
+output PII_FILTER_FUNCTION_APP_NAME string = functionsStack.outputs.PII_FILTER_FUNCTION_APP_NAME
+output PII_FILTER_FUNCTION_BASE_URL string = functionsStack.outputs.PII_FILTER_FUNCTION_BASE_URL

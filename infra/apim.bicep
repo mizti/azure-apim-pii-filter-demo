@@ -12,8 +12,8 @@ param publisherEmail string
 @description('Publisher display name')
 param publisherName string = 'APIM Presidio Demo'
 
-@description('Public URL of demo API function app, e.g. https://func-xxx.azurewebsites.net')
-param demoFunctionBaseUrl string
+@description('Public URL of the internal PII filter function app, e.g. https://func-xxx.azurewebsites.net')
+param piiFilterFunctionBaseUrl string
 
 @description('Public URL of presidio API function app, e.g. https://func-yyy.azurewebsites.net')
 param presidioFunctionBaseUrl string
@@ -21,7 +21,7 @@ param presidioFunctionBaseUrl string
 @description('Tags to apply to APIM resources')
 param tags object = {}
 
-var presidioAnalyzeUrl = '${presidioFunctionBaseUrl}/api/presidio/analyze'
+var presidioAnalyzeUrl = '${presidioFunctionBaseUrl}/api/pii-filter/analyze'
 
 resource apim 'Microsoft.ApiManagement/service@2023-05-01-preview' = {
   name: apimName
@@ -40,93 +40,27 @@ resource apim 'Microsoft.ApiManagement/service@2023-05-01-preview' = {
   }
 }
 
-resource presidioApi 'Microsoft.ApiManagement/service/apis@2023-05-01-preview' = {
-  name: 'presidio-api'
+resource customerSupportApi 'Microsoft.ApiManagement/service/apis@2023-05-01-preview' = {
+  name: 'customer-support-api'
   parent: apim
   properties: {
-    displayName: 'Presidio API'
-    path: 'presidio'
+    displayName: 'Customer Support API'
+    path: 'customer-support'
     protocols: [
       'https'
     ]
-    serviceUrl: presidioFunctionBaseUrl
+    serviceUrl: piiFilterFunctionBaseUrl
     subscriptionRequired: false
   }
 }
 
-resource presidioAnalyzeOperation 'Microsoft.ApiManagement/service/apis/operations@2023-05-01-preview' = {
-  name: 'analyze'
-  parent: presidioApi
+resource submitCustomerSupportMessageOperation 'Microsoft.ApiManagement/service/apis/operations@2023-05-01-preview' = {
+  name: 'submit-message'
+  parent: customerSupportApi
   properties: {
-    displayName: 'Analyze text'
+    displayName: 'Submit customer support message'
     method: 'POST'
-    urlTemplate: '/analyze'
-    request: {
-      queryParameters: []
-      headers: []
-      representations: [
-        {
-          contentType: 'application/json'
-        }
-      ]
-    }
-    responses: [
-      {
-        statusCode: 200
-      }
-      {
-        statusCode: 400
-      }
-    ]
-  }
-}
-
-resource presidioPolicy 'Microsoft.ApiManagement/service/apis/policies@2023-05-01-preview' = {
-  name: 'policy'
-  parent: presidioApi
-  properties: {
-    format: 'rawxml'
-    value: '''
-<policies>
-  <inbound>
-    <base />
-    <rewrite-uri template="/api/presidio/analyze" />
-  </inbound>
-  <backend>
-    <base />
-  </backend>
-  <outbound>
-    <base />
-  </outbound>
-  <on-error>
-    <base />
-  </on-error>
-</policies>
-'''
-  }
-}
-
-resource demoApi 'Microsoft.ApiManagement/service/apis@2023-05-01-preview' = {
-  name: 'demo-api'
-  parent: apim
-  properties: {
-    displayName: 'Demo API'
-    path: 'demo'
-    protocols: [
-      'https'
-    ]
-    serviceUrl: demoFunctionBaseUrl
-    subscriptionRequired: false
-  }
-}
-
-resource demoProcessOperation 'Microsoft.ApiManagement/service/apis/operations@2023-05-01-preview' = {
-  name: 'process'
-  parent: demoApi
-  properties: {
-    displayName: 'Process text'
-    method: 'POST'
-    urlTemplate: '/process'
+    urlTemplate: '/messages'
     request: {
       queryParameters: []
       headers: []
@@ -160,9 +94,9 @@ resource presidioAnalyzeNamedValue 'Microsoft.ApiManagement/service/namedValues@
   }
 }
 
-resource demoPolicy 'Microsoft.ApiManagement/service/apis/policies@2023-05-01-preview' = {
+resource customerSupportPolicy 'Microsoft.ApiManagement/service/apis/policies@2023-05-01-preview' = {
   name: 'policy'
-  parent: demoApi
+  parent: customerSupportApi
   dependsOn: [
     presidioAnalyzeNamedValue
   ]
@@ -201,7 +135,7 @@ resource demoPolicy 'Microsoft.ApiManagement/service/apis/policies@2023-05-01-pr
         </return-response>
       </when>
     </choose>
-    <rewrite-uri template="/api/demo/process" />
+    <rewrite-uri template="/api/pii-filter/messages" />
   </inbound>
   <backend>
     <base />

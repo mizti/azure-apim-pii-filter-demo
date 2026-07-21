@@ -23,8 +23,8 @@ def _presidio_analyze(text: str) -> dict:
     return response.json()
 
 
-@app.route(route="demo/process", methods=["POST"])
-def process_request(req: func.HttpRequest) -> func.HttpResponse:
+@app.route(route="pii-filter/messages", methods=["POST"])
+def filter_message(req: func.HttpRequest) -> func.HttpResponse:
     try:
         body = req.get_json()
     except ValueError:

@@ -55,6 +55,7 @@ resource presidioStorage 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   }
   kind: 'StorageV2'
   properties: {
+    publicNetworkAccess: 'Enabled'
     supportsHttpsTrafficOnly: true
     minimumTlsVersion: 'TLS1_2'
     allowBlobPublicAccess: false
@@ -72,6 +73,7 @@ resource demoStorage 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   }
   kind: 'StorageV2'
   properties: {
+    publicNetworkAccess: 'Enabled'
     supportsHttpsTrafficOnly: true
     minimumTlsVersion: 'TLS1_2'
     allowBlobPublicAccess: false
@@ -136,7 +138,7 @@ module demoFunction './core/host/flex-function.bicep' = {
     applicationInsightsConnectionString: appInsights.outputs.connectionString
     logAnalyticsWorkspaceId: logAnalytics.outputs.id
     appSettings: {
-      PRESIDIO_API_URL: '${presidioFunction.outputs.uri}/api/presidio/analyze'
+      PRESIDIO_API_URL: '${presidioFunction.outputs.uri}/api/pii-filter/analyze'
       PRESIDIO_TIMEOUT_SECONDS: '10'
     }
   }
@@ -144,5 +146,5 @@ module demoFunction './core/host/flex-function.bicep' = {
 
 output PRESIDIO_FUNCTION_APP_NAME string = presidioFunction.outputs.name
 output PRESIDIO_FUNCTION_BASE_URL string = presidioFunction.outputs.uri
-output DEMO_FUNCTION_APP_NAME string = demoFunction.outputs.name
-output DEMO_FUNCTION_BASE_URL string = demoFunction.outputs.uri
+output PII_FILTER_FUNCTION_APP_NAME string = demoFunction.outputs.name
+output PII_FILTER_FUNCTION_BASE_URL string = demoFunction.outputs.uri
