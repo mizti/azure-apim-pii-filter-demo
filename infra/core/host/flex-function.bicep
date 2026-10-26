@@ -5,6 +5,8 @@ param location string = resourceGroup().location
 param tags object = {}
 param appServicePlanId string
 param storageAccountName string
+param storageDiagnosticSettingName string = '${name}-storage-logs'
+param virtualNetworkSubnetId string = ''
 param applicationInsightsId string
 param applicationInsightsConnectionString string
 param logAnalyticsWorkspaceId string
@@ -131,6 +133,7 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
   }
   properties: {
     serverFarmId: appServicePlanId
+    virtualNetworkSubnetId: !empty(virtualNetworkSubnetId) ? virtualNetworkSubnetId : null
     httpsOnly: true
     siteConfig: {
       minTlsVersion: '1.2'
@@ -168,7 +171,7 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
 }
 
 resource storageLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
-  name: '${name}-storage-logs'
+  name: storageDiagnosticSettingName
   scope: storage::blobService
   properties: {
     workspaceId: logAnalyticsWorkspaceId

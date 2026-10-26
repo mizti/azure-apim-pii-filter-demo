@@ -1,249 +1,224 @@
-# Azure APIM Presidio Demo
+# Azure APIM + Microsoft Decision-1 PII Filter Demo
 
-顧客サポートメッセージ受付APIを例に、Azure API Management（APIM）でリクエスト本文の個人情報（PII）を検査し、PIIを含まないリクエストだけをバックエンドへ転送するサンプルです。
+顧客サポートメッセージを例に、Azure API Management（APIM）からMicrosoft Decision-1を
+呼び出し、通常は個人情報（PII）が含まれないリクエストだけをバックエンドへ転送するサンプルです。
+PresidioおよびPresidioをホストするFunctionは使用しません。
 
 ## 構成
 
-- Azure API Management Developer SKU
-- PresidioラッパーAPIをホストするAzure Functions Flex Consumption
-- 内部PIIフィルターAPIをホストするAzure Functions Flex Consumption
-- VNet統合なし
+```text
+Client → APIM → Decision-1（Foundry）
+           ├─ pii    → 400で拒否
+           ├─ エラー → 502で拒否
+           └─ no_pii → メッセージ受付Function → 200
+```
 
-APIMは顧客サポートメッセージを受け付け、リクエスト本文をPresidio Functionへ送信します。PIIが検出された場合はHTTP `400`を返し、検出されなかった場合だけ内部PIIフィルターFunctionへリクエストを転送します。
+- APIM Developer SKU（システム割り当てマネージドID）
+- Microsoft Decision-1 v1、DataZoneStandard、容量60
+- バックエンド: Azure Functions Flex Consumption、Python 3.11
+- Storage、Application Insights、Log Analytics
+- FunctionのVNet統合とStorage用Private Endpoint（Blob / Queue / Table）、Private DNS
+- APIMとFoundryの通信は公開HTTPSエンドポイント＋マネージドID
 
-詳細は[アーキテクチャ](docs/architecture.md)と[APIインターフェース](docs/api-interfaces.md)を参照してください。
+PII判定はAPIMだけで行います。バックエンドFunctionはJSONの入力検証とメッセージ受理のみで、
+Decision-1やPresidioの再呼び出しは行いません。
+日本語の `instructions` / `criteria` による `choice` 型で `pii` / `no_pii` を分類します。
+独自の確率しきい値は適用しません。
+
+詳細は[アーキテクチャ](docs/architecture.md)、[API仕様](docs/api-interfaces.md)、
+[Decision-1利用ガイドと単体実測結果](docs/decision-1.md)を参照してください。
 
 ## 前提条件
 
-- Azure CLI（`az`）
-- Azure Developer CLI（`azd`）
-- `curl`
-- `jq`
+- Azure CLI（`az`、Bicep CLIを含む）、Azure Developer CLI（`azd`）
+- Bash、`curl`、`jq`
+- リソース作成権限とロール割り当て作成権限
+- Flex ConsumptionのVNet統合に必要な `Microsoft.App` リソースプロバイダーの登録権限
+- 対象リージョンでのDecision-1提供とクォータ
 
-Azureへログインし、デプロイに使用する値を環境変数へ設定します。
+2026-10-25のJapan Eastでは `DataZoneStandard` が利用可能でした。
+データゾーン内で処理されるため、Japan Eastのみでの処理を保証するものではありません。
+提供状況はデプロイ前に再確認してください。
+
+## azdによる一式デプロイ
 
 ```bash
 az login --use-device-code
 azd auth login
 
-export AZURE_LOCATION="japaneast"
-export PUBLISHER_EMAIL="your-email@example.com"
+az provider register --namespace Microsoft.App --wait
+azd env new apim-decision1
+azd env set AZURE_SUBSCRIPTION_ID "$(az account show --query id --output tsv)"
+azd env set AZURE_LOCATION japaneast
+azd env set AZURE_PRINCIPAL_ID "$(az ad signed-in-user show --query id --output tsv)"
+azd env set PUBLISHER_EMAIL "your-email@example.com"
+azd up --no-prompt
 ```
 
-## Functionsのデプロイ
+既存環境を使う場合は `azd env new` の代わりに `azd env select apim-decision1` を実行します。
+APIM、FoundryとDecision-1、バックエンドFunctionをすべて同じazd環境で作成します。
+APIM Developerの初回作成には約30〜45分以上かかることがあります。課金が発生します。
+APIMを別のスクリプトで作成する必要はありません。
 
-`azd`環境を作成し、2つのFunction Appと関連リソースをデプロイします。
+同じ処理を行う補助スクリプト:
 
 ```bash
-azd env new apim-presidio-demo
-azd env set AZURE_LOCATION "$AZURE_LOCATION"
-azd up
+./tests/01_deploy.sh apim-decision1 japaneast your-email@example.com
 ```
 
-デプロイ後のリソースグループ名とFunction AppのURLを環境変数へ設定します。
+ローカルのazd環境には、エンドポイントなどの出力が保存されます。
 
 ```bash
 export RESOURCE_GROUP_NAME="$(azd env get-value RESOURCE_GROUP_NAME)"
-export PII_FILTER_FUNCTION_BASE_URL="$(azd env get-value PII_FILTER_FUNCTION_BASE_URL)"
-export PRESIDIO_FUNCTION_BASE_URL="$(azd env get-value PRESIDIO_FUNCTION_BASE_URL)"
+export APIM_NAME="$(azd env get-value APIM_NAME)"
+export APIM_GATEWAY_URL="$(azd env get-value APIM_GATEWAY_URL)"
+export DEMO_FUNCTION_BASE_URL="$(azd env get-value DEMO_FUNCTION_BASE_URL)"
+export DECISION1_ENDPOINT="$(azd env get-value DECISION1_ENDPOINT)"
+export DECISION1_DEPLOYMENT="$(azd env get-value DECISION1_DEPLOYMENT)"
 ```
 
-## API Managementのデプロイ
+APIMのIDにはFoundryアカウントスコープの `Cognitive Services User` を割り当てます。
+APIキーは使用せず、Foundryのキー認証も無効にしています。
+`AZURE_PRINCIPAL_ID` のユーザーにも単体テスト用の推論権限を付与します。
+RBAC反映直後は一時的に `502` となる場合があるため、権限の反映後に再確認してください。
 
-APIM Developer SKUのプロビジョニングには約40分かかるため、Functionsとは分けてデプロイします。
-
-```bash
-./tests/02_deploy_apim.sh \
-    "$RESOURCE_GROUP_NAME" \
-    "$PUBLISHER_EMAIL" \
-    "$AZURE_LOCATION"
-```
-
-デプロイ完了後、APIM名とゲートウェイURLを環境変数へ設定します。
-
-```bash
-export APIM_NAME="$(az apim list \
-    --resource-group "$RESOURCE_GROUP_NAME" \
-    --query '[0].name' \
-    --output tsv)"
-export APIM_GATEWAY_URL="https://${APIM_NAME}.azure-api.net"
-```
+Storageは公開アクセスを無効化し、FunctionのVNet統合からPrivate Endpoint経由で使用します。
+デプロイ環境の組織PolicyがStorageの公開アクセスを無効化するため、
+元の「VNetなし」からこの部分を変更しています。Policyの除外や共有キー有効化は行いません。
+Private Endpoint等にも追加料金がかかります。
 
 ## 動作確認
 
-### テストスクリプト
-
 ```bash
 ./tests/00_prerequisites.sh
-./tests/03_test_function_direct.sh "$PII_FILTER_FUNCTION_BASE_URL"
+./tests/03_test_function_direct.sh "$DEMO_FUNCTION_BASE_URL"
 ./tests/04_test_apim.sh "$APIM_GATEWAY_URL"
 ```
 
-### 許可されるリクエスト
+直接Functionを呼ぶテストではPIIも受理されます。PII拒否の検証はAPIM経由で行ってください。
+APIMテストはPIIの有無、入力不正、転送するフィールドの正規化、JSONエスケープを検証します。
+実データではなく、合成データを使用してください。
 
-個人情報を含まない顧客サポートメッセージはバックエンドへ転送され、HTTP `200`が返ります。
-
-```bash
-curl --include --silent --show-error \
-    --request POST \
-    "${APIM_GATEWAY_URL}/customer-support/messages" \
-    --header 'Content-Type: application/json' \
-    --data '{"text":"this text is safe"}'
-```
-
-レスポンス例:
-
-```http
-HTTP/1.1 200 OK
-Content-Type: application/json
-
-{"status":"accepted","message":"No PII was detected.","text":"this text is safe"}
-```
-
-### 拒否されるリクエスト
-
-電話番号などの個人情報を含むリクエストはAPIMポリシーで拒否され、バックエンドへは転送されません。
+### PIIなし
 
 ```bash
 curl --include --silent --show-error \
-    --request POST \
-    "${APIM_GATEWAY_URL}/customer-support/messages" \
-    --header 'Content-Type: application/json' \
-    --data '{"text":"my phone number is 090-1234-5678"}'
+  --request POST "${APIM_GATEWAY_URL}/customer-support/messages" \
+  --header 'Content-Type: application/json' \
+  --data '{"text":"アプリの設定を教えてください。"}'
 ```
 
-レスポンス例:
+HTTP `200`:
 
-```http
-HTTP/1.1 400 Bad Request
-Content-Type: application/json
+```json
+{"status":"accepted","message":"Message accepted.","text":"アプリの設定を教えてください。"}
+```
 
+### PIIあり
+
+同じリクエストを送る、jq不要の単一curlサンプル:
+
+```bash
+export APIM_GATEWAY_URL="$(azd env get-value APIM_GATEWAY_URL)"
+./tests/08_curl_apim-pii.sh
+```
+
+レスポンスのHTTPヘッダーと本文を表示します。期待値はHTTP `400` と以下の拒否JSONです。
+このサンプル自体は期待値を自動検証しません。自動検証には `04_test_apim.sh` を使ってください。
+
+```bash
+curl --include --silent --show-error \
+  --request POST "${APIM_GATEWAY_URL}/customer-support/messages" \
+  --header 'Content-Type: application/json' \
+  --data '{"text":"連絡先は090-1234-5678です。"}'
+```
+
+HTTP `400`:
+
+```json
 {"status":"rejected","message":"PII detected by APIM policy."}
 ```
 
-## 参考: APIインターフェース仕様
+### PII判定をスキップする（デモ用）
 
-すべてのAPIは`Content-Type: application/json`のHTTP `POST`を受け付けます。このサンプルではAPIMのサブスクリプションキーとFunctionキーを要求しません。
+`?no-pii-filter` を付けるとDecision-1を呼ばず、PIIを含む本文もバックエンドへ転送します。
+キーの存在で判定するため、`?no-pii-filter=false` でもスキップします。
+JSONと `text` の入力検証は維持し、クエリや余分なフィールドはバックエンドへ転送しません。
 
-### 共通リクエスト
-
-```json
-{
-    "text": "検査対象の文字列"
-}
+```bash
+export APIM_GATEWAY_URL="$(azd env get-value APIM_GATEWAY_URL)"
+./tests/09_test_apim-no-pii-filter.sh
 ```
 
-`text`は空でない文字列である必要があります。不正なJSON、`text`の欠落、空文字列にはHTTP `400`を返します。
+09はcurlで通常時の拒否、スキップ時の受理、不正入力の拒否を送り、jqで応答を自動検証します。
 
-### APIM公開API
+08と同じ本文を `?no-pii-filter` 付きで送る、jq不要の単一curlサンプル:
 
-顧客からの問い合わせメッセージを受け付ける事業APIです。APIMがPresidio FunctionでPIIを検査し、PIIがなければ内部PIIフィルターFunctionへ転送します。
+```bash
+./tests/10_curl_apim-no-pii-filter.sh
+```
 
-| 項目 | 値 |
+10はHTTPヘッダーと本文を表示します。期待値はHTTP `200`、`status=accepted` です。
+期待値の自動検証は行いません。
+
+**誰でも判定を回避できるデモ用機能です。本番ではこの分岐を削除するか権限制御を追加してください。**
+
+### Decision-1の単体テスト
+
+```bash
+./tests/05_test_decision1.sh
+./tests/06_test_decision1-jp.sh
+./tests/07_curl_decision1-jp.sh
+```
+
+それぞれ英語プロンプト、日本語プロンプト、jq不要の単一curlサンプルです。
+これらはAPIMを通さずDecision-1を呼びます。
+
+### バックエンドのローカルテスト
+
+```bash
+python3 -m pip install -r src/demo-api/requirements.txt
+python3 -m unittest discover -s tests -p 'test_*.py'
+```
+
+## 実環境での確認結果
+
+`apim-decision1` 環境、Japan East、リソースグループ `rg-apim-decision1` で
+`azd up --environment apim-decision1 --no-prompt` のプロビジョニングとコード公開が成功しました。
+
+| 検証 | 結果 |
 | --- | --- |
-| メソッド | `POST` |
-| URL | `${APIM_GATEWAY_URL}/customer-support/messages` |
-| 認証 | なし |
+| Function直接呼び出し | 7件成功 |
+| APIM経由の分類・入力検証・転送内容 | 22件成功 |
+| Decision APIエラーと模擬応答による分岐検証 | 11件成功 |
+| ローカルのPython・APIMポリシーテスト | 8件成功 |
 
-| HTTPステータス | 条件 | レスポンス概要 |
-| --- | --- | --- |
-| `200` | PIIが検出されなかった | メッセージの受理レスポンス |
-| `400` | PIIが検出された | APIMポリシーの拒否レスポンス |
-| `502` | Presidio Functionの呼び出しに失敗した | `{"status":"error","message":"Presidio API call from APIM failed."}` |
+異常系では、存在しないモデルデプロイ、未知の分類、必須フィールドの欠落、
+型不正、不正JSON、HTTP 503を検証し、HTTP 502で拒否することを確認しました。
+模擬応答用の一時APIM APIは削除し、実際のDecision-1接続先へ復元後にHTTP 200を再確認しています。
 
-PIIが検出されなかった場合:
+稼働中のバックエンドは `func-apim-decision1-support-o5mj5g` です。
+VNet統合前に作成した空の `func-apim-decision1-demo-o5mj5g` とそのFlexプランは、
+後付け統合後もコード公開に失敗したため使用していません。削除はしていません。
+`azure.yaml` の `resourceName` で、新しいバックエンドを明示的に指定しています。
+新規環境では、この古い空のFunctionやプランは作成されません。
 
-```json
-{
-    "status": "accepted",
-    "message": "No PII was detected.",
-    "text": "検査対象の文字列"
-}
+## 制約と注意
+
+- このサンプルは本番向けDLP実装ではなく、モデルの見逃し・過検知があります。
+- APIM公開APIはサブスクリプションキーを要求しません。
+- デモのバックエンドFunctionは匿名アクセス可能です。直接アクセスではPII検査を迂回できます。
+  本番ではFunctionへの直接アクセスを認証・ネットワーク制限で遮断してください。
+- 未知の回答やDecision-1のHTTPエラー、タイムアウト、応答解析失敗ではバックエンドへ転送しません。
+- 検査・転送の対象は `text` のみです。他のフィールドとクエリパラメーターは転送しません。
+- 旧Presidioの `findings`、内部PIIフィルター経路、二重検査は廃止しました。
+- モデルv1の廃止予定は確認時点で2027-02-04でした。継続利用前に最新情報を確認してください。
+
+不要になった環境は対象を確認したうえで削除します。
+
+```bash
+azd down --environment apim-decision1
 ```
 
-PIIが検出された場合:
-
-```json
-{
-    "status": "rejected",
-    "message": "PII detected by APIM policy."
-}
-```
-
-### 内部PIIフィルターFunction API
-
-バックエンドでメッセージをPII検査する内部エンドポイントです。このFunction自身もPresidio Functionを呼び出してPIIを検査します。
-
-| 項目 | 値 |
-| --- | --- |
-| メソッド | `POST` |
-| URL | `${PII_FILTER_FUNCTION_BASE_URL}/api/pii-filter/messages` |
-| 認証 | なし |
-
-| HTTPステータス | 条件 | レスポンス概要 |
-| --- | --- | --- |
-| `200` | PIIが検出されなかった | 受理結果と入力文字列 |
-| `400` | リクエスト不正、またはPIIが検出された | エラーまたは拒否結果 |
-| `500` | `PRESIDIO_API_URL`が未設定 | 設定エラー |
-| `502` | Presidio Functionの呼び出しに失敗した | 依存APIエラー |
-
-PIIが検出された場合:
-
-```json
-{
-    "status": "rejected",
-    "message": "PII detected in request payload.",
-    "findings": [
-        {
-            "entity_type": "EMAIL_ADDRESS",
-            "start": 12,
-            "end": 28,
-            "score": 0.8,
-            "text": "john@example.com"
-        }
-    ]
-}
-```
-
-### Presidio Function API
-
-文字列を解析し、検出したPIIの位置、種別、スコアを返すエンドポイントです。PIIの有無にかかわらず、正常に解析できた場合はHTTP `200`を返します。
-
-| 項目 | 値 |
-| --- | --- |
-| メソッド | `POST` |
-| URL | `${PRESIDIO_FUNCTION_BASE_URL}/api/pii-filter/analyze` |
-| 認証 | なし |
-
-| HTTPステータス | 条件 | レスポンス概要 |
-| --- | --- | --- |
-| `200` | 解析に成功した | `has_pii`と検出結果一覧 |
-| `400` | JSONまたは`text`が不正 | 入力エラー |
-
-PIIが検出された場合:
-
-```json
-{
-    "text": "Call me at 090-1234-5678",
-    "has_pii": true,
-    "findings": [
-        {
-            "entity_type": "PHONE_NUMBER",
-            "start": 11,
-            "end": 24,
-            "score": 0.8,
-            "text": "090-1234-5678"
-        }
-    ]
-}
-```
-
-PIIが検出されなかった場合は`has_pii`が`false`、`findings`が空配列になります。
-
-```json
-{
-    "text": "this text is safe",
-    "has_pii": false,
-    "findings": []
-}
-```
+先行する単体検証用の `rg-apim-decision1-demo` は別のリソースグループです。
+このazd環境の削除では削除されません。

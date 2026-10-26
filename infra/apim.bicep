@@ -1,27 +1,37 @@
 targetScope = 'resourceGroup'
 
-@description('APIM service name')
+@description('APIM service name.')
 param apimName string
 
-@description('Deployment location')
+@description('Deployment location.')
 param location string = resourceGroup().location
 
-@description('Publisher email')
+@description('Publisher email.')
 param publisherEmail string
 
-@description('Publisher display name')
-param publisherName string = 'APIM Presidio Demo'
+@description('Publisher display name.')
+param publisherName string = 'APIM Decision-1 Demo'
 
-@description('Public URL of the internal PII filter function app, e.g. https://func-xxx.azurewebsites.net')
-param piiFilterFunctionBaseUrl string
+@description('Public URL of the customer support backend Function App.')
+param demoFunctionBaseUrl string
 
-@description('Public URL of presidio API function app, e.g. https://func-yyy.azurewebsites.net')
-param presidioFunctionBaseUrl string
+@description('Foundry account name in this resource group.')
+param decision1AccountName string
 
-@description('Tags to apply to APIM resources')
+@description('Foundry resource endpoint without an API path.')
+param decision1Endpoint string
+
+@description('Decision-1 deployment name.')
+param decision1DeploymentName string
+
+@description('Tags applied to APIM.')
 param tags object = {}
 
-var presidioAnalyzeUrl = '${presidioFunctionBaseUrl}/api/pii-filter/analyze'
+var cognitiveServicesUserRoleId = 'a97b65f3-24c7-4388-baec-2e87135dc908'
+
+resource decisionFoundry 'Microsoft.CognitiveServices/accounts@2025-06-01' existing = {
+  name: decision1AccountName
+}
 
 resource apim 'Microsoft.ApiManagement/service@2023-05-01-preview' = {
   name: apimName
@@ -40,6 +50,16 @@ resource apim 'Microsoft.ApiManagement/service@2023-05-01-preview' = {
   }
 }
 
+resource decisionInferenceRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(decisionFoundry.id, apim.id, cognitiveServicesUserRoleId)
+  scope: decisionFoundry
+  properties: {
+    principalId: apim.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveServicesUserRoleId)
+  }
+}
+
 resource customerSupportApi 'Microsoft.ApiManagement/service/apis@2023-05-01-preview' = {
   name: 'customer-support-api'
   parent: apim
@@ -49,47 +69,42 @@ resource customerSupportApi 'Microsoft.ApiManagement/service/apis@2023-05-01-pre
     protocols: [
       'https'
     ]
-    serviceUrl: piiFilterFunctionBaseUrl
+    serviceUrl: demoFunctionBaseUrl
     subscriptionRequired: false
   }
 }
 
-resource submitCustomerSupportMessageOperation 'Microsoft.ApiManagement/service/apis/operations@2023-05-01-preview' = {
+resource submitMessage 'Microsoft.ApiManagement/service/apis/operations@2023-05-01-preview' = {
   name: 'submit-message'
   parent: customerSupportApi
   properties: {
     displayName: 'Submit customer support message'
     method: 'POST'
     urlTemplate: '/messages'
-    request: {
-      queryParameters: []
-      headers: []
-      representations: [
-        {
-          contentType: 'application/json'
-        }
-      ]
-    }
     responses: [
-      {
-        statusCode: 200
-      }
-      {
-        statusCode: 400
-      }
-      {
-        statusCode: 502
-      }
+      { statusCode: 200 }
+      { statusCode: 400 }
+      { statusCode: 502 }
     ]
   }
 }
 
-resource presidioAnalyzeNamedValue 'Microsoft.ApiManagement/service/namedValues@2023-05-01-preview' = {
-  name: 'presidio-analyze-url'
+resource decisionEndpoint 'Microsoft.ApiManagement/service/namedValues@2023-05-01-preview' = {
+  name: 'decision1-endpoint'
   parent: apim
   properties: {
-    displayName: 'presidio-analyze-url'
-    value: presidioAnalyzeUrl
+    displayName: 'decision1-endpoint'
+    value: '${decision1Endpoint}/providers/microsoft/v1/systemone'
+    secret: false
+  }
+}
+
+resource decisionDeployment 'Microsoft.ApiManagement/service/namedValues@2023-05-01-preview' = {
+  name: 'decision1-deployment'
+  parent: apim
+  properties: {
+    displayName: 'decision1-deployment'
+    value: decision1DeploymentName
     secret: false
   }
 }
@@ -98,56 +113,13 @@ resource customerSupportPolicy 'Microsoft.ApiManagement/service/apis/policies@20
   name: 'policy'
   parent: customerSupportApi
   dependsOn: [
-    presidioAnalyzeNamedValue
+    decisionEndpoint
+    decisionDeployment
+    decisionInferenceRole
   ]
   properties: {
     format: 'rawxml'
-    value: '''
-<policies>
-  <inbound>
-    <base />
-    <set-variable name="requestBody" value="@(context.Request.Body.As<string>(preserveContent: true))" />
-    <send-request mode="new" response-variable-name="presidioResponse" timeout="20" ignore-error="false">
-      <set-url>{{presidio-analyze-url}}</set-url>
-      <set-method>POST</set-method>
-      <set-header name="Content-Type" exists-action="override">
-        <value>application/json</value>
-      </set-header>
-      <set-body>@((string)context.Variables["requestBody"])</set-body>
-    </send-request>
-    <choose>
-      <when condition="@(((IResponse)context.Variables[&quot;presidioResponse&quot;]).StatusCode != 200)">
-        <return-response>
-          <set-status code="502" reason="Bad Gateway" />
-          <set-header name="Content-Type" exists-action="override">
-            <value>application/json</value>
-          </set-header>
-          <set-body>{"status":"error","message":"Presidio API call from APIM failed."}</set-body>
-        </return-response>
-      </when>
-      <when condition="@{ var p = (IResponse)context.Variables[&quot;presidioResponse&quot;]; var json = p.Body.As<JObject>(preserveContent: true); return (bool?)json[&quot;has_pii&quot;] == true; }">
-        <return-response>
-          <set-status code="400" reason="Bad Request" />
-          <set-header name="Content-Type" exists-action="override">
-            <value>application/json</value>
-          </set-header>
-          <set-body>{"status":"rejected","message":"PII detected by APIM policy."}</set-body>
-        </return-response>
-      </when>
-    </choose>
-    <rewrite-uri template="/api/pii-filter/messages" />
-  </inbound>
-  <backend>
-    <base />
-  </backend>
-  <outbound>
-    <base />
-  </outbound>
-  <on-error>
-    <base />
-  </on-error>
-</policies>
-'''
+    value: loadTextContent('./policies/customer-support.xml')
   }
 }
 

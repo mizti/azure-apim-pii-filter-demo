@@ -1,0 +1,113 @@
+<policies>
+  <inbound>
+    <base />
+    <set-variable name="requestText" id="validate-input" value="@{
+      if (context.Request.Body == null) { return &quot;&quot;; }
+      var body = JToken.Parse(context.Request.Body.As&lt;string&gt;(preserveContent: true));
+      if (body.Type != JTokenType.Object) { return &quot;&quot;; }
+      var text = body[&quot;text&quot;];
+      if (text == null || text.Type != JTokenType.String) { return &quot;&quot;; }
+      return (string)text;
+    }" />
+    <choose>
+      <when condition="@(String.IsNullOrWhiteSpace((string)context.Variables[&quot;requestText&quot;]))">
+        <return-response>
+          <set-status code="400" reason="Bad Request" />
+          <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+          <set-body>{"status":"error","message":"Request body must be valid JSON with a non-empty string field 'text'."}</set-body>
+        </return-response>
+      </when>
+    </choose>
+    <choose>
+      <when condition="@(!context.Request.Url.Query.ContainsKey(&quot;no-pii-filter&quot;))">
+        <send-request mode="new" response-variable-name="decisionResponse" timeout="20" ignore-error="true">
+          <set-url>{{decision1-endpoint}}</set-url>
+          <set-method>POST</set-method>
+          <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+          <set-body>@{
+            return new JObject(
+              new JProperty("model", "{{decision1-deployment}}"),
+              new JProperty("state", new JObject(new JProperty("text", (string)context.Variables["requestText"]))),
+              new JProperty("questions", new JObject(
+                new JProperty("has_pii", new JObject(
+                  new JProperty("type", "choice"),
+                  new JProperty("instructions", "state.textの内容を対象に、個人を特定できる情報（PII）が含まれているか分類してください。住所であっても公知の情報（例: 国会議事堂の住所）や明らかなダミー値、マスクされた値は個人情報として扱いません。また、個人情報の種類に一般的に言及しているだけの場合は、PIIとはみなしません。"),
+                  new JProperty("criteria", new JObject(
+                    new JProperty("pii", "具体的な個人の氏名、個人のメールアドレス、電話番号、自宅の住所、クレジットカード番号、または日本の個人番号（マイナンバー）の値を含む。"),
+                    new JProperty("no_pii", "上記の個人情報の具体的な値をいずれも含まない。")
+                  ))
+                ))
+              ))
+            ).ToString();
+          }</set-body>
+          <authentication-managed-identity resource="https://cognitiveservices.azure.com" />
+        </send-request>
+        <choose>
+          <when condition="@(context.Variables[&quot;decisionResponse&quot;] == null || ((IResponse)context.Variables[&quot;decisionResponse&quot;]).StatusCode != 200)">
+            <trace source="decision1" severity="error"><message>Decision-1 API request failed.</message></trace>
+            <return-response>
+              <set-status code="502" reason="Bad Gateway" />
+              <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+              <set-body>{"status":"error","message":"Decision-1 API call from APIM failed."}</set-body>
+            </return-response>
+          </when>
+        </choose>
+        <set-variable name="piiChoice" value="@{
+          var response = ((IResponse)context.Variables[&quot;decisionResponse&quot;]).Body.As&lt;JObject&gt;();
+          var answers = response[&quot;answers&quot;] as JObject;
+          if (answers == null) { return &quot;invalid&quot;; }
+          var answer = answers[&quot;has_pii&quot;] as JObject;
+          if (answer == null) { return &quot;invalid&quot;; }
+          if ((string)answer[&quot;type&quot;] != &quot;choice&quot;) { return &quot;invalid&quot;; }
+          var choice = answer[&quot;choice&quot;];
+          if (choice == null || choice.Type != JTokenType.String) { return &quot;invalid&quot;; }
+          return (string)choice;
+        }" />
+        <choose>
+          <when condition="@((string)context.Variables[&quot;piiChoice&quot;] == &quot;pii&quot;)">
+            <return-response>
+              <set-status code="400" reason="Bad Request" />
+              <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+              <set-body>{"status":"rejected","message":"PII detected by APIM policy."}</set-body>
+            </return-response>
+          </when>
+          <when condition="@((string)context.Variables[&quot;piiChoice&quot;] != &quot;no_pii&quot;)">
+            <trace source="decision1" severity="error"><message>Decision-1 returned an invalid answer.</message></trace>
+            <return-response>
+              <set-status code="502" reason="Bad Gateway" />
+              <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+              <set-body>{"status":"error","message":"Decision-1 API call from APIM failed."}</set-body>
+            </return-response>
+          </when>
+        </choose>
+      </when>
+    </choose>
+    <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+    <set-body>@(new JObject(new JProperty("text", (string)context.Variables["requestText"])).ToString())</set-body>
+    <rewrite-uri template="/api/customer-support/messages" copy-unmatched-params="false" />
+  </inbound>
+  <backend>
+    <base />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+    <choose>
+      <when condition="@(context.LastError.PolicyId == &quot;validate-input&quot;)">
+        <return-response>
+          <set-status code="400" reason="Bad Request" />
+          <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+          <set-body>{"status":"error","message":"Request body must be valid JSON with a non-empty string field 'text'."}</set-body>
+        </return-response>
+      </when>
+    </choose>
+    <trace source="decision1" severity="error"><message>APIM could not complete the Decision-1 screening pipeline.</message></trace>
+    <return-response>
+      <set-status code="502" reason="Bad Gateway" />
+      <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+      <set-body>{"status":"error","message":"Decision-1 API call from APIM failed."}</set-body>
+    </return-response>
+  </on-error>
+</policies>

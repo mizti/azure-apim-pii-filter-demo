@@ -12,16 +12,12 @@ param tags object = {}
 var abbrs = loadJsonContent('./abbreviations.json')
 var resourceToken = toLower(uniqueString(subscription().id, environmentName, location))
 
-var presidioServiceName = 'presidio-api'
 var demoServiceName = 'demo-api'
 
-var presidioFunctionName = '${abbrs.webSitesFunctions}${environmentName}-presidio-${take(resourceToken, 6)}'
-var demoFunctionName = '${abbrs.webSitesFunctions}${environmentName}-demo-${take(resourceToken, 6)}'
+var demoFunctionName = '${abbrs.webSitesFunctions}${environmentName}-support-${take(resourceToken, 6)}'
 
-var presidioPlanName = '${abbrs.webServerFarms}${environmentName}-presidio-${take(resourceToken, 6)}'
-var demoPlanName = '${abbrs.webServerFarms}${environmentName}-demo-${take(resourceToken, 6)}'
+var demoPlanName = '${abbrs.webServerFarms}${environmentName}-support-${take(resourceToken, 6)}'
 
-var presidioStorageName = 'stp${take(uniqueString(resourceToken, 'presidio'), 21)}'
 var demoStorageName = 'std${take(uniqueString(resourceToken, 'demo'), 21)}'
 
 var appInsightsName = '${abbrs.insightsComponents}${environmentName}-${take(resourceToken, 6)}'
@@ -46,24 +42,6 @@ module appInsights './core/monitor/applicationinsights.bicep' = {
   }
 }
 
-resource presidioStorage 'Microsoft.Storage/storageAccounts@2023-01-01' = {
-  name: presidioStorageName
-  location: location
-  tags: tags
-  sku: {
-    name: 'Standard_LRS'
-  }
-  kind: 'StorageV2'
-  properties: {
-    publicNetworkAccess: 'Enabled'
-    supportsHttpsTrafficOnly: true
-    minimumTlsVersion: 'TLS1_2'
-    allowBlobPublicAccess: false
-    allowSharedKeyAccess: false
-    defaultToOAuthAuthentication: true
-  }
-}
-
 resource demoStorage 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   name: demoStorageName
   location: location
@@ -73,27 +51,12 @@ resource demoStorage 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   }
   kind: 'StorageV2'
   properties: {
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: 'Disabled'
     supportsHttpsTrafficOnly: true
     minimumTlsVersion: 'TLS1_2'
     allowBlobPublicAccess: false
     allowSharedKeyAccess: false
     defaultToOAuthAuthentication: true
-  }
-}
-
-module presidioPlan './core/host/appserviceplan.bicep' = {
-  name: 'presidio-plan'
-  params: {
-    name: presidioPlanName
-    location: location
-    tags: tags
-    kind: 'functionapp'
-    reserved: true
-    sku: {
-      name: 'FC1'
-      tier: 'FlexConsumption'
-    }
   }
 }
 
@@ -112,17 +75,13 @@ module demoPlan './core/host/appserviceplan.bicep' = {
   }
 }
 
-module presidioFunction './core/host/flex-function.bicep' = {
-  name: 'presidio-function'
+module backendNetwork './backend-network.bicep' = {
+  name: 'backend-network'
   params: {
-    name: presidioFunctionName
     location: location
-    tags: union(tags, { 'azd-service-name': presidioServiceName })
-    appServicePlanId: presidioPlan.outputs.id
-    storageAccountName: presidioStorage.name
-    applicationInsightsId: appInsights.outputs.id
-    applicationInsightsConnectionString: appInsights.outputs.connectionString
-    logAnalyticsWorkspaceId: logAnalytics.outputs.id
+    virtualNetworkName: 'vnet-${environmentName}-${take(resourceToken, 6)}'
+    storageAccountId: demoStorage.id
+    tags: tags
   }
 }
 
@@ -134,17 +93,14 @@ module demoFunction './core/host/flex-function.bicep' = {
     tags: union(tags, { 'azd-service-name': demoServiceName })
     appServicePlanId: demoPlan.outputs.id
     storageAccountName: demoStorage.name
+    // Preserve the existing storage-scoped setting across backend replacement.
+    storageDiagnosticSettingName: '${abbrs.webSitesFunctions}${environmentName}-demo-${take(resourceToken, 6)}-storage-logs'
+    virtualNetworkSubnetId: backendNetwork.outputs.functionSubnetId
     applicationInsightsId: appInsights.outputs.id
     applicationInsightsConnectionString: appInsights.outputs.connectionString
     logAnalyticsWorkspaceId: logAnalytics.outputs.id
-    appSettings: {
-      PRESIDIO_API_URL: '${presidioFunction.outputs.uri}/api/pii-filter/analyze'
-      PRESIDIO_TIMEOUT_SECONDS: '10'
-    }
   }
 }
 
-output PRESIDIO_FUNCTION_APP_NAME string = presidioFunction.outputs.name
-output PRESIDIO_FUNCTION_BASE_URL string = presidioFunction.outputs.uri
-output PII_FILTER_FUNCTION_APP_NAME string = demoFunction.outputs.name
-output PII_FILTER_FUNCTION_BASE_URL string = demoFunction.outputs.uri
+output demoFunctionAppName string = demoFunction.outputs.name
+output demoFunctionBaseUrl string = demoFunction.outputs.uri
